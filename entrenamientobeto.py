@@ -29,7 +29,7 @@ tokenizer = BertTokenizer.from_pretrained("dccuchile/bert-base-spanish-wwm-cased
 model = BertForMaskedLM.from_pretrained("dccuchile/bert-base-spanish-wwm-cased")
 
 # Directorio que contiene tus archivos de texto con notas clínicas
-data_directory = "data/entrenamientobeto"
+data_directory = "data"
 
 # Lista para almacenar los textos de tus notas clínicas
 clinical_notes = []
