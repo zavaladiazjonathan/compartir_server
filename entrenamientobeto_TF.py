@@ -4,32 +4,31 @@
 # Fecha: 26 de Junio de 2023
 # Descripción: Agrupar multiples archivos de texto en uno solo
 # ============================================================================
-from transformers import BertTokenizer, TFBertForMaskedLM
-from tensorflow.keras.preprocessing.sequence import pad_sequences
-from tensorflow.data import Dataset
-import tensorflow as tf
+from transformers import BertTokenizer, BertForMaskedLM
+from torch.utils.data import DataLoader, Dataset
+import torch
 import os
 import time
 import random
-
+from torch.optim import AdamW
 def mask_randomly(text, tokenizer, mask_probability=0.15):
     tokenized_text = tokenizer.tokenize(text)
     masked_tokens = []
     for token in tokenized_text:
         if random.random() < mask_probability:
+            # Con una probabilidad de 15%, reemplazamos el token por [MASK]
             masked_tokens.append(tokenizer.mask_token)
         else:
             masked_tokens.append(token)
     return tokenizer.convert_tokens_to_string(masked_tokens)
 
 start_time = time.time()
-
 # Tokenizador y modelo preentrenado Beto
 tokenizer = BertTokenizer.from_pretrained("dccuchile/bert-base-spanish-wwm-cased")
-model = TFBertForMaskedLM.from_pretrained("dccuchile/bert-base-spanish-wwm-cased")
+model = BertForMaskedLM.from_pretrained("dccuchile/bert-base-spanish-wwm-cased")
 
 # Directorio que contiene tus archivos de texto con notas clínicas
-data_directory = "data"
+data_directory = "data/entrenamientobeto"
 
 # Lista para almacenar los textos de tus notas clínicas
 clinical_notes = []
@@ -49,16 +48,16 @@ for filename in os.listdir(data_directory):
             continue
 
 # Tokenización de las notas clínicas
-encodings = tokenizer(clinical_notes, padding=True, truncation=True, return_tensors="tf")
+encodings = tokenizer(clinical_notes, padding=True, truncation=True, return_tensors="pt")
 
-# Crear un conjunto de datos TensorFlow
+# Crear un conjunto de datos PyTorch
 class FillMaskDataset(Dataset):
     def __init__(self, encodings):
         self.encodings = encodings
 
     def __getitem__(self, idx):
-        item = {key: val[idx] for key, val in self.encodings.items()}
-        item['attention_mask'] = tf.where(item['input_ids'] != 0, 1, 0)
+        item = {key: val[idx].clone().detach() for key, val in self.encodings.items()}
+        item['attention_mask'] = torch.tensor([1 if i != 0 else 0 for i in item['input_ids']])
         return item
 
     def __len__(self):
@@ -67,28 +66,33 @@ class FillMaskDataset(Dataset):
 train_dataset = FillMaskDataset(encodings)
 
 # Configuración del entrenamiento
-optimizer = tf.keras.optimizers.Adam(learning_rate=5e-5)
+optimizer = AdamW(model.parameters(), lr=5e-5)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Entrenamiento
-train_loader = tf.data.Dataset.from_tensor_slices(train_dataset).batch(2)
+model.train()
+model.to(device)
+
+train_loader = DataLoader(train_dataset, batch_size=2, shuffle=True)
 
 # Durante el entrenamiento, asegúrate de pasar la máscara de atención junto con tus input_ids
 for epoch in range(3):
     for batch in train_loader:
-        input_ids = batch["input_ids"]
-        attention_mask = batch["attention_mask"]  # Añade la máscara de atención aquí
-        labels = tf.where(input_ids != tokenizer.mask_token_id, input_ids, -100)
-        with tf.GradientTape() as tape:
-            outputs = model(input_ids, attention_mask=attention_mask, labels=labels)  # Pasa la máscara de atención aquí
-            loss = outputs.loss
-        gradients = tape.gradient(loss, model.trainable_variables)
-        optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+        optimizer.zero_grad()
+        input_ids = batch["input_ids"].to(device)
+        attention_mask = batch["attention_mask"].to(device)  # Añade la máscara de atención aquí
+        labels = input_ids.clone()
+        labels[labels != tokenizer.mask_token_id] = -100
+        outputs = model(input_ids, attention_mask=attention_mask, labels=labels)  # Pasa la máscara de atención aquí
+        loss = outputs.loss
+        loss.backward()
+        optimizer.step()
 
 # Guardar el modelo entrenado
 model.save_pretrained("modelo/modelo_entrenado")
 tokenizer.save_pretrained("modelo/tokenizer")
+# Medir el tiempo de llenado de espacios en blanco
 
-# Medir el tiempo de ejecución
 execution_time = time.time() - start_time
 
 print(f"Tiempo de ejecución: {execution_time:.2f} segundos")
